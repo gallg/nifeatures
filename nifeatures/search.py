@@ -23,11 +23,11 @@ def _update_parameters(parameters, settings):
     return parameters
 
 
-def _get_key_parameters(p_grid, keys, values, ID):
+def _get_key_parameters(p_grid, keys, values, pid):
 
     values = np.array(values, dtype="object")
 
-    selected = [True if key.startswith(ID) else False for key in p_grid.keys()]
+    selected = [True if key.startswith(pid) else False for key in p_grid.keys()]
 
     selected_keys = list(itertools.compress(keys, selected))
     selected_values = list(itertools.compress(values, selected))
@@ -36,19 +36,19 @@ def _get_key_parameters(p_grid, keys, values, ID):
     return selected_keys, selected_values, key_params
 
 
-def _get_search_params(X, y, p_grid, ID, iteration=None):
-    Xy_hash = {"X": joblib.hash(str(X)), "y": joblib.hash(str(y))}
+def _get_search_params(x, y, p_grid, pid, iteration=None):
+    xy_hash = {"X": joblib.hash(str(x)), "y": joblib.hash(str(y))}
 
     # Get GridSearch parameters for the current iteration;
     keys = [key.split("__")[1] for key in p_grid.keys()]
     values = list(itertools.product(*p_grid.values()))[iteration]
 
     # Get key parameters for the transformer from parameter grid;
-    keys, values, params = _get_key_parameters(p_grid, keys, values, ID)
+    keys, values, params = _get_key_parameters(p_grid, keys, values, pid)
     params = dict(zip(keys, values))
 
     # Hash X, y and other parameters together;
-    hash_params = joblib.hash((str(Xy_hash), str(params)))
+    hash_params = joblib.hash((str(xy_hash), str(params)))
 
     return keys, values, params, hash_params
 
@@ -88,7 +88,8 @@ class TransformerCV:
 
         # Define a cache and result variable;
         self._cache = []
-        self.precomp = []
+        self.precomputed = []
+        self.check_transformer_presence = None
 
     def check_pipeline(self):
 
@@ -118,17 +119,17 @@ class TransformerCV:
 
         return check_transformer_presence
 
-    def _precompute(self, X, y, p_grid, iteration=None, train_index=None):
+    def _precompute(self, x, y, p_grid, iteration=None, train_index=None):
 
-        transformer_ID = self.estimator.steps[
+        transformer_id = self.estimator.steps[
             self.check_transformer_presence is True][0]
-        X_train, y_train = X[train_index], y[train_index]
+        x_train, y_train = x[train_index], y[train_index]
 
         keys, values, params, hash_params = _get_search_params(
-            X_train,
+            x_train,
             y_train,
             p_grid,
-            transformer_ID,
+            transformer_id,
             iteration
         )
 
@@ -138,15 +139,15 @@ class TransformerCV:
             self._cache.append(hash_params)
             params = _update_parameters(params, self.settings)
             coords = DisplacementInvariantTransformer(**params).precompute(
-                X_train,
+                x_train,
                 y_train
             )
         else:
             coords = np.nan
 
-        return (keys, values, hash_params, coords)
+        return keys, values, hash_params, coords
 
-    def fit(self, X, y, groups=None):
+    def fit(self, x, y, groups=None):
 
         if not isinstance(y, np.ndarray):
             y = np.array(y)
@@ -164,20 +165,20 @@ class TransformerCV:
         n_iterations = len(list(itertools.product(*self.parameters.values())))
 
         # Run precompute for every combination of parameters and cv-fold;
-        self.precomp.append(Parallel(n_jobs=self.n_jobs)(delayed(
-            self._precompute)(X, y, self.parameters, iteration, train_index)
-            for train_index, _ in self.cv.split(X, y, groups=groups)
-            for iteration in np.arange(n_iterations)))
+        self.precomputed.append(Parallel(n_jobs=self.n_jobs)(delayed(
+            self._precompute)(x, y, self.parameters, iteration, train_index)
+                                                             for train_index, _ in self.cv.split(x, y, groups=groups)
+                                                             for iteration in np.arange(n_iterations)))
 
         # Remove possible NA and return precomputed data as a numpy array;
-        self.precomp = pd.DataFrame.from_records(
-            self.precomp[0]).dropna().to_numpy()
+        self.precomputed = pd.DataFrame.from_records(
+            self.precomputed[0]).dropna().to_numpy()
 
         if self.search is None:
-            return self.precomp
+            return self.precomputed
 
         else:
-            # Use settings to set up the trasformer before gridsearch;
+            # Use settings to set up the transformer before GridSearch;
             if len(self.settings) > 0:
                 for key, value in zip(
                     self.settings.keys(),
@@ -191,11 +192,11 @@ class TransformerCV:
                     )
 
             # If the transformer is present,
-            # add precomputed data to its precomp attribute;
+            # add precomputed data to its "precomputed" attribute;
             setattr(self.estimator.steps[
                 self.check_transformer_presence is True][1],
-                "precomp",
-                self.precomp
+                "precomputed",
+                self.precomputed
                 )
 
             # Run GridSearch algorithm;
@@ -203,6 +204,6 @@ class TransformerCV:
                                  self.parameters,
                                  scoring=self.scoring,
                                  cv=self.cv,
-                                 n_jobs=self.n_jobs).fit(X, y, groups=groups)
+                                 n_jobs=self.n_jobs).fit(x, y, groups=groups)
 
             return search
