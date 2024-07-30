@@ -147,8 +147,10 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
 
         if self.precomputed is not None:
             self.coords_ = self.get_precomputed_data(x, y)
+            print("using precomputed coordinates")
 
         else:
+            print("not using precomputed data")
             # Initialize array to contain group-level statistics;
             self.group_stats = np.zeros((x.shape[1], 2))
 
@@ -199,7 +201,7 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, x):
-
+        print("transforming data")
         # Check if the Transformer is fitted;
         check_is_fitted(self)
 

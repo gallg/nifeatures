@@ -78,8 +78,10 @@ class TransformerCV:
 
         if isinstance(cv, int) or (cv is None):
             self.cv = KFold(n_splits=cv)
-        else:
+        elif callable(cv):
             self.cv = cv
+        else:
+            raise TypeError("The cv parameter must be an integer, a callable or None.")
 
         if n_jobs is None:
             self.n_jobs = 1
@@ -110,11 +112,16 @@ class TransformerCV:
             for i in range(n_steps)
         ]
 
-        # Check whether there is only one instance of DIT() in the pipeline;
+        # Check if the pipeline correctly contains the transformer;
         if sum(check_transformer_presence) > 1:
             raise Exception(
                 ("Only one instance of Displacement_Invariant_Transformer " +
                  "is allowed in a pipeline.")
+            )
+        elif sum(check_transformer_presence) == 0:
+            raise Exception(
+                ("At least one instance of Displacement_Invariant_Transformer " +
+                 "is required in a pipeline.")
             )
 
         return check_transformer_presence
@@ -154,17 +161,12 @@ class TransformerCV:
 
         # Check if transformer is present inside Pipeline;
         self.check_transformer_presence = self.check_pipeline()
-        is_transformer_present = True in self.check_transformer_presence
-
-        if not is_transformer_present:
-            raise Exception(("An instance of " +
-                             "Displacement_Invariant_Transformer() " +
-                             "must be present in the pipeline"))
 
         # n_iteration is equal to number of parameter combinations;
         n_iterations = len(list(itertools.product(*self.parameters.values())))
 
         # Run precompute for every combination of parameters and cv-fold;
+        print("pre-computation started!")
         self.precomputed.append(Parallel(n_jobs=self.n_jobs)(delayed(
             self._precompute)(x, y, self.parameters, iteration, train_index)
                                                              for train_index, _ in self.cv.split(x, y, groups=groups)
@@ -174,6 +176,7 @@ class TransformerCV:
         self.precomputed = pd.DataFrame.from_records(
             self.precomputed[0]).dropna().to_numpy()
 
+        print("pre-computation ended!")
         if self.search is None:
             return self.precomputed
 
