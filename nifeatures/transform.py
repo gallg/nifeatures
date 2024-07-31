@@ -8,15 +8,13 @@ import pandas as pd
 import numpy as np
 import joblib
 
-# ToDo: Test the whole program behavior before merging to main;
-
 
 class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(self, *, mask=None, n_peaks=100, radius=4, min_distance=2,
                  method='R2', probability=None, temperature=0.2, threshold=0,
                  tolerance=1e-4, aggregator_func=(np.max,), precomputed=None,
-                 random_state=None):
+                 random_state=None, **kwargs):
 
         """ Transforms brain data to generate new, more important and
             concise features.
@@ -88,6 +86,7 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         self.threshold = threshold
         self.tolerance = tolerance
         self.random_state = random_state
+        self.kwargs = kwargs
 
         # variable init;
         self.empty_map = None
@@ -95,40 +94,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         self.X_out_ = None
         self.coords_ = None
         self.group_stats = None
-
-    def get_precomputed_data(self, x, y):
-
-        # Get hash for the current X and y;
-        xy_hash = {"X": joblib.hash(str(x)), "y": joblib.hash(str(y))}
-
-        # Get current parameters used by the search algorithm;
-        search_params = self.precomputed[0][0]
-        current_params = tuple(
-            [self.__getattribute__(search_params[parameter])
-                for parameter in range(len(search_params))]
-                    )
-        current_params = dict(zip(search_params, current_params))
-
-        # Hash X, y and all the parameters together;
-        hash_params = joblib.hash((
-            str(xy_hash),
-            str(current_params)
-            ))
-        current_hash = [hash_params == self.precomputed[:, 2][_hash]
-                        for _hash in range(len(self.precomputed[:, 2]))]
-
-        # For debug purposes only!!!
-        # print(hash_params, current_params, ": ", True in current_hash)
-
-        # If GridSearch "refit" parameter is True,
-        # call fit normally to fit the best_estimator_;
-        try:
-            coords = self.precomputed[:, -1][current_hash][0]
-        except ValueError:
-            self.precomputed = None
-            coords = self.fit(x, y).coords_
-
-        return coords
 
     def fit(self, x, y):
 
@@ -145,65 +110,61 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         # Initialize empty_map to avoid re-allocation;
         self.empty_map = np.zeros(self.mask.get_fdata().shape)
 
-        if self.precomputed is not None:
-            self.coords_ = self.get_precomputed_data(x, y)
-            print("using precomputed coordinates")
+        # Initialize array to contain group-level statistics;
+        self.group_stats = np.zeros((x.shape[1], 2))
 
-        else:
-            print("not using precomputed data")
-            # Initialize array to contain group-level statistics;
-            self.group_stats = np.zeros((x.shape[1], 2))
+        # Select only non-zero std voxels for correlation;
+        non_zero_mask = self.mask.get_fdata().flatten().astype(bool)
+        non_zero_features = np.array(range(x.shape[1]))[non_zero_mask]
+        non_zero_features = non_zero_features[
+            (np.std(x[:, non_zero_mask],
+                    axis=0) != 0)
+            ]
 
-            # Select only non-zero std voxels for correlation;
-            non_zero_mask = self.mask.get_fdata().flatten().astype(bool)
-            non_zero_features = np.array(range(x.shape[1]))[non_zero_mask]
-            non_zero_features = non_zero_features[
-                (np.std(x[:, non_zero_mask],
-                        axis=0) != 0)
-                ]
+        # Select correlation method and get group-level statistics;
+        if self.method == 'R2':
 
-            # Select correlation method and get group-level statistics;
-            if self.method == 'R2':
+            for feature in non_zero_features:
+                self.group_stats[feature, 0] = calculate_r2(
+                    x[:, feature],
+                    y
+                    )
 
-                for feature in non_zero_features:
-                    self.group_stats[feature, 0] = calculate_r2(
-                        x[:, feature],
-                        y
-                        )
+        elif isinstance(self.method, abc.Callable):
 
-            elif isinstance(self.method, abc.Callable):
+            for feature in non_zero_features:
+                self.group_stats[feature, 0] = self.method(
+                    x[:, feature],
+                    y
+                    )
 
-                for feature in non_zero_features:
-                    self.group_stats[feature, 0] = self.method(
-                        x[:, feature],
-                        y
-                        )
+        # Reshape group-level statistical map and get local maxima;
+        stat_map = self.group_stats[:, 0].reshape(self.mask.get_fdata().shape)
 
-            # Reshape group-level statistical map and get local maxima;
-            stat_map = self.group_stats[:, 0].reshape(self.mask.get_fdata().shape)
-
-            self.group_map_ = nib.Nifti1Image(
-                stat_map,
-                affine=self.mask.affine
-                )
-            self.coords_ = find_peaks(self.group_map_,
-                                      mask=self.mask,
-                                      empty_map=self.empty_map,
-                                      n_peaks=self.n_peaks,
-                                      min_distance=self.min_distance,
-                                      probability=self.probability,
-                                      temperature=self.temperature,
-                                      thr=self.threshold,
-                                      tol=self.tolerance,
-                                      random_state=self.random_state
-                                      )
+        self.group_map_ = nib.Nifti1Image(
+            stat_map,
+            affine=self.mask.affine
+            )
+        self.coords_ = find_peaks(self.group_map_,
+                                  mask=self.mask,
+                                  empty_map=self.empty_map,
+                                  n_peaks=self.n_peaks,
+                                  min_distance=self.min_distance,
+                                  probability=self.probability,
+                                  temperature=self.temperature,
+                                  thr=self.threshold,
+                                  tol=self.tolerance,
+                                  random_state=self.random_state
+                                  )
 
         return self
 
     def transform(self, x):
-        print("transforming data")
         # Check if the Transformer is fitted;
         check_is_fitted(self)
+
+        if self.empty_map is None:
+            self.empty_map = np.zeros(self.mask.get_fdata().shape)
 
         # Initialize the output array;
         n_samples = x.shape[0]
@@ -236,9 +197,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
             self.X_out_ = temp
         else:
             self.X_out_ = np.column_stack((self.X_out_, temp))
-
-    def precompute(self, x, y):
-        return self.fit(x, y).coords_
 
     def fit_transform(self, x, y=None, **fit_params):
         return self.fit(x, y).transform(x)
