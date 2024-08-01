@@ -4,17 +4,16 @@ from sklearn.utils.validation import check_is_fitted
 from nifeatures.utils import create_roi, calculate_r2, find_peaks
 from collections import abc
 import nibabel as nib
-import pandas as pd
 import numpy as np
-import joblib
+import warnings
 
 
 class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(self, *, mask=None, n_peaks=100, radius=4, min_distance=2,
                  method='R2', probability=None, temperature=0.2, threshold=0,
-                 tolerance=1e-4, aggregator_func=(np.max,), precomputed=None,
-                 random_state=None, **kwargs):
+                 tolerance=1e-4, aggregator_func=(np.max,), random_state=None,
+                 **kwargs):
 
         """ Transforms brain data to generate new, more important and
             concise features.
@@ -57,9 +56,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
             aggregator_func (list, optional):
                 List of functions used to generate the new features.
                 Defaults to [np.max].
-            precomputed (array-like, optional):
-                None or array with precomputed hashes and coordinates to get a
-                faster parameters search. Defaults to None.
             random_state (int, optional):
                 If probability is equal to 'softmax', set seed to make sphere
                 generation reproducible. Defaults to None.
@@ -69,11 +65,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
             n_participants x (n_ROIs * n_funcs).
 
         """
-
-        if isinstance(precomputed, pd.DataFrame):
-            self.precomputed = precomputed.to_numpy()
-        else:
-            self.precomputed = precomputed
 
         self.mask = mask
         self.n_peaks = n_peaks
@@ -103,6 +94,7 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         if isinstance(self.mask, str):
             self.mask = nib.load(self.mask)
         elif self.mask is None:
+            warnings.warn("No mask provided, using default mask (MNI152, 2mm).")
             self.mask = load_mni152_brain_mask(resolution=2)
         elif isinstance(self.mask, nib.Nifti1Image):
             pass
@@ -163,8 +155,8 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         # Check if the Transformer is fitted;
         check_is_fitted(self)
 
-        if self.empty_map is None:
-            self.empty_map = np.zeros(self.mask.get_fdata().shape)
+        # if self.empty_map is None:
+        #     self.empty_map = np.zeros(self.mask.get_fdata().shape)
 
         # Initialize the output array;
         n_samples = x.shape[0]
