@@ -1,26 +1,44 @@
-from scipy.ndimage import maximum_filter
 from scipy.special import softmax
 from scipy.signal import argrelextrema
 from warnings import warn
-from numba import njit
 import numpy as np
 
 
-@njit
-def _calculate_r2(X: np.ndarray, y: np.ndarray, rowvar=False) -> np.float64:
-    return np.corrcoef(X, y, rowvar=rowvar)[0][1]**2
+def calculate_r2(x, y):
+    return pairwise_correlation(x, y) ** 2
 
 
-def _create_roi(empty_map, coord, size, flatten=False):
+def pairwise_correlation(a, b):
+    am = a - np.mean(a, axis=0, keepdims=True)
+    bm = b - np.mean(b, axis=0, keepdims=True)
+    return am.T @ bm / (np.sqrt(
+        np.sum(am**2, axis=0,
+               keepdims=True)).T * np.sqrt(
+        np.sum(bm**2, axis=0, keepdims=True)))
 
-    # Set filter size and the ROI center;
-    filter_size = (size, size, size)
-    empty_map[coord[0], coord[1], coord[2]] = 1
 
-    # Apply the maximum filter and get roi indexes;
-    filtered_arr = maximum_filter(empty_map, size=filter_size)
+def draw_sphere(empty_map, mask, coord, radius):
 
-    # Flatten, if necessary, then restore the empty map to avoid making copies;
+    # Calculate Euclidean distance;
+    x_indices, y_indices, z_indices = np.indices(empty_map.shape)
+    distances = np.sqrt((x_indices - coord[0]) ** 2
+                        + (y_indices - coord[1]) ** 2
+                        + (z_indices - coord[2]) ** 2)
+
+    # Use the mask to make sure the sphere is not drawn out of the brain;
+    sphere = distances <= radius
+    sphere = np.logical_and(sphere, mask)
+    empty_map[sphere] = 1
+
+    return empty_map
+
+
+def create_roi(empty_map, mask, coord, radius, flatten=False):
+
+    # Apply the maximum filter and get roi indices;
+    filtered_arr = draw_sphere(empty_map, mask, coord, radius)
+
+    # Get indices, then restore the empty map to avoid making copies;
     if flatten is True:
         indices = np.flatnonzero(filtered_arr)
         empty_map[np.unravel_index(indices, empty_map.shape)] = 0
@@ -31,16 +49,17 @@ def _create_roi(empty_map, coord, size, flatten=False):
     return indices
 
 
-def _reduce_coords(stats, empty_map, coords, n_peaks, min_distance):
+def reduce_coords(stats, empty_map, coords, n_peaks, min_distance):
 
     result = []
 
     for coord in coords:
+        x, y, z = coord
 
-        if not stats[coord[0]][coord[1]][coord[2]]:
+        if not stats[(x, y, z)]:
             continue
 
-        roi = _create_roi(empty_map, coord, min_distance)
+        roi = create_roi(empty_map, stats, coord, min_distance)
         stats[roi] = 0
 
         result.append(coord)
@@ -51,7 +70,7 @@ def _reduce_coords(stats, empty_map, coords, n_peaks, min_distance):
     return result
 
 
-def _update_stats_map(stats, temperature=None, use_softmax=False, thr=0):
+def update_stats_map(stats, temperature=None, use_softmax=False, thr=0):
 
     # Skip thresholding if threshold is already equal to 0:
     if thr != 0:
@@ -59,8 +78,9 @@ def _update_stats_map(stats, temperature=None, use_softmax=False, thr=0):
             thr = 0
             warn(("The selected threshold is higher than the max value in " +
                   "the statistical map. Using a threshold of 0."))
-        else:
-            stats[stats <= thr] = 0
+
+    # Threshold data;
+    stats[stats <= thr] = 0
 
     # Apply temperature if needed;
     if temperature is not None:
@@ -73,9 +93,9 @@ def _update_stats_map(stats, temperature=None, use_softmax=False, thr=0):
     return stats
 
 
-def _get_peaks_proba(stats_map, empty_map, n_peaks,
-                     min_distance, temperature, thr,
-                     tol, random_state):
+def get_peak_probabilities(stats_map, empty_map, n_peaks,
+                           min_distance, temperature, thr,
+                           tol, random_state):
 
     if empty_map is None:
         empty_map = np.zeros(stats_map.shape)
@@ -84,21 +104,22 @@ def _get_peaks_proba(stats_map, empty_map, n_peaks,
     map_length = np.flatnonzero(stats_map).shape[0]
 
     # Apply temperature and get softmax probabilities;
-    proba_map = _update_stats_map(stats_map.copy(),
-                                  temperature=temperature,
-                                  use_softmax=True,
-                                  thr=thr
-                                  )
+    probability_map = update_stats_map(
+        stats_map.copy(),
+        temperature=temperature,
+        use_softmax=True,
+        thr=thr
+    )
 
     # If temperature is too low, use max values to define peaks;
-    use_max_values = ((1-tol) <= np.max(proba_map) <= (1+tol))
+    use_max_values = ((1-tol) <= np.max(probability_map) <= (1+tol))
 
     if use_max_values:
         coords = np.argsort(abs(stats_map.flatten()))[::-1][:map_length]
     else:
         rng = np.random.default_rng(random_state)
         random_nums = rng.uniform(size=map_length)
-        coords = np.searchsorted(np.cumsum(proba_map), random_nums)
+        coords = np.searchsorted(np.cumsum(probability_map), random_nums)
 
     for coord in coords:
         result.append(np.unravel_index(coord, stats_map.shape))
@@ -108,17 +129,17 @@ def _get_peaks_proba(stats_map, empty_map, n_peaks,
         result = np.array(result[:n_peaks])
 
     elif min_distance > 0:
-        result = _reduce_coords(stats_map,
-                                empty_map,
-                                result,
-                                n_peaks,
-                                min_distance
-                                )
+        result = reduce_coords(stats_map.copy(),
+                               empty_map,
+                               result,
+                               n_peaks,
+                               min_distance
+                               )
 
         if len(result) < n_peaks:
-            warn("The number of coordinates that respect min_distance " +
-                 "is lower than n_peaks. " +
-                 "Using n_peaks == {}".format(len(result)))
+            warn("The number of coordinates that respect min_distance "
+                 + "is lower than n_peaks. "
+                 + "Using n_peaks == {}".format(len(result)))
 
     else:
         raise ValueError(
@@ -128,14 +149,14 @@ def _get_peaks_proba(stats_map, empty_map, n_peaks,
     return np.array(result)
 
 
-def _calculate_peaks(coords, n_peaks, min_distance):
+def calculate_peaks(coords, n_peaks, min_distance):
 
     result = []
     for peak in range(n_peaks):
 
         if peak > (coords.shape[0]-1):
-            warn("Maximum number of local maximas is lower then n_peaks. " +
-                 "Using n_peaks == {}".format(len(result)))
+            warn("Maximum number of local maxima is lower then n_peaks. "
+                 + "Using n_peaks == {}".format(len(result)))
             break
 
         result.append(coords[peak])
@@ -158,7 +179,7 @@ def find_peaks(
         empty_map=None,
         n_peaks=100,
         min_distance=2,
-        proba=None,
+        probability=None,
         temperature=0.1,
         thr=0,
         tol=1e-4,
@@ -172,18 +193,18 @@ def find_peaks(
     stats_map[stat_mask.astype(bool) == 0] = 0
 
     # Use softmax to find random peaks in the data;
-    if proba == 'softmax':
-        coords = _get_peaks_proba(stats_map,
-                                  empty_map,
-                                  n_peaks,
-                                  min_distance,
-                                  temperature,
-                                  thr=thr,
-                                  tol=tol,
-                                  random_state=random_state
-                                  )
+    if probability == 'softmax':
+        coords = get_peak_probabilities(stats_map,
+                                        empty_map,
+                                        n_peaks,
+                                        min_distance,
+                                        temperature,
+                                        thr=thr,
+                                        tol=tol,
+                                        random_state=random_state
+                                        )
 
-    elif proba is None:
+    elif probability is None:
         peaks0 = np.array(
             argrelextrema(stats_map, np.greater, axis=0, order=1))
         peaks1 = np.array(
@@ -204,6 +225,6 @@ def find_peaks(
         # Use the maximum number of peaks if n_peaks > len(coords);
         values = stats_map[coords[:, 0], coords[:, 1], coords[:, 2]]
         coords = coords[values.argsort()[::-1]]
-        coords = _calculate_peaks(coords, n_peaks, min_distance)
+        coords = calculate_peaks(coords, n_peaks, min_distance)
 
     return coords

@@ -18,7 +18,7 @@ Displacement Invariant Transformer (DIT), which generates new meaningful feature
 
 Check out the concept behind the DIT with our [IBRO2023 poster](https://twitter.com/g_gallitto/status/1700817459681361984).
 
-#### 2. TransformerCV
+#### 2. DisplacementInvariantTransformerCV
 An hyperparameter search class tailored for our Displacement Invariant Transformer. Give a look at how it works in
 our example notebook (see the "Example Usage" section).
 
@@ -26,7 +26,12 @@ our example notebook (see the "Example Usage" section).
 Available soon...
 
 ### Example Usage:
-A simple usage example can be found in notebooks/example.ipynb <br>
+A simple usage example for each transformer can be found in its dedicated notebook: <br> 
+
+Available notebooks:<br>
+
+- **Displacement Invariant Transformer**: notebooks/DIT_example.ipynb
+- coming soon...
 
 ### Documentation:
 You can find the NiFeatures documentation following this [link here]() (not available, yet).

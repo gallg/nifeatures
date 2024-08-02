@@ -1,208 +1,196 @@
 from .transform import DisplacementInvariantTransformer
-from sklearn.model_selection import KFold
+from sklearn.base import is_classifier, is_regressor
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
+import nibabel as nib
 import pandas as pd
 import numpy as np
 import itertools
-import joblib
 
 
-def _update_parameters(parameters, settings):
-    param_keys = list(parameters.keys())
-    settings_keys = list(settings.keys())
-
-    duplicates = [duplicate for duplicate in settings_keys
-                  if duplicate in param_keys]
-
-    if len(duplicates) > 0:
-        for element in duplicates:
-            del settings[element]
-
-    parameters.update(settings)
-    return parameters
+def r2_score(y_true, y_pred):
+    return np.corrcoef(y_true, y_pred)[0, 1]**2
 
 
-def _get_key_parameters(p_grid, keys, values, ID):
-
-    values = np.array(values, dtype="object")
-
-    selected = [True if key.startswith(ID) else False for key in p_grid.keys()]
-
-    selected_keys = list(itertools.compress(keys, selected))
-    selected_values = list(itertools.compress(values, selected))
-    key_params = dict(zip(selected_keys, selected_values))
-
-    return selected_keys, selected_values, key_params
-
-
-def _get_search_params(X, y, p_grid, ID, iteration=None):
-    Xy_hash = {"X": joblib.hash(str(X)), "y": joblib.hash(str(y))}
-
-    # Get GridSearch parameters for the current iteration;
-    keys = [key.split("__")[1] for key in p_grid.keys()]
+def _get_search_params(p_grid, iteration=None):
+    keys = list(p_grid.keys())
     values = list(itertools.product(*p_grid.values()))[iteration]
-
-    # Get key parameters for the transformer from parameter grid;
-    keys, values, params = _get_key_parameters(p_grid, keys, values, ID)
     params = dict(zip(keys, values))
-
-    # Hash X, y and other parameters together;
-    hash_params = joblib.hash((str(Xy_hash), str(params)))
-
-    return keys, values, params, hash_params
+    return keys, values, params
 
 
-class TransformerCV:
+def _split_params(params):
+    trf_params = {k.split("__", 1)[1]: v for k, v in params.items() if k.startswith('trf__')}
+    model_params = {k.split("__", 1)[1]: v for k, v in params.items() if k.startswith('model__')}
+    return trf_params, model_params
+
+
+class DisplacementInvariantTransformerCV:
     def __init__(
             self,
             estimator,
             p_grid,
             *,
-            search=None,
-            settings=None,
+            mask=None,
             scoring=None,
             cv=None,
+            shuffle=False,
+            random_state=None,
             n_jobs=None
     ):
+        """Hyperparameter search for models that include an instance of 
+        DisplacementInvariantTransformer.
+
+        Unlike GridSearchCV, DisplacementInvariantTransformerCV does not need to take in
+        a scikit-learn pipelin that includes DisplacementInvariantTransformer. Instead, it
+        takes in a scikit-learn estimator and a dictionary of hyperparameter ranges.
+
+        the parameter grid format follows scikit-learn's parameter grid format.
+
+        Args:
+            estimator (callable): 
+                A scikit-learn estimator interface passed as a callable. 
+                It doesn't need to contain DisplacementInvariantTransformer.
+            p_grid (dict): 
+                Dictionary with parameter names as keys and lists of parameter 
+                settings to try as values.
+            mask (str, Nifti1Image optional): 
+                Brain mask used to perform calculations on the brain space. 
+                If None, the MNI152 2mm template is used. Defaults to None.
+            scoring (callable, optional): 
+                Strategy to evaluate the performance of the cross-validated 
+                model on the test set. If None, scoring defaults to "accuracy_score"
+                or "r2_score" for classification and regression tasks respectively. 
+                Defaults to None.
+            cv (int, cross-validation generator, optional): 
+                Determines the cross-validation splitting strategy. 
+                If None, use the default 5-fold cross-validation. Defaults to None.
+            shuffle (bool, optional): 
+                Whether to shuffle the data before splitting into batches. 
+                The samples within each split will not be shuffled. Defaults to False.
+            random_state (int, RandomState instance, optional): 
+                When shuffle is True, random_state determines randomization of each fold. 
+                Defaults to None.
+            n_jobs (int, optional): 
+                Number of jobs to run in parallel. If None, n_jobs is set to 1.
+                set it to -1 to use all CPU cores. Defaults to None.
+
+        Attributes:
+            coordinates_ (pandas DataFrame): 
+                The parameters, score and coordinates computed by the transformer
+                for each model evaluated using cross-validation.
+            best_model_ (scikit-learn Pipeline): 
+                A pipeline that includes the best model found using 
+                DisplacementInvariantTransformer and the specified estimator.
+                Note that this model is not retrained on the training data.
+        """
+
         self.estimator = estimator
         self.parameters = p_grid
-        self.search = search
-        self.scoring = scoring
+        self.scorer = scoring
 
-        # If settings is None, the DIT runs with default parameters;
-        if settings is None:
-            self.settings = dict()
+        if mask is None:
+            self.mask = mask
+        elif isinstance(mask, str):
+            self.mask = nib.load(mask)
+        elif isinstance(mask, nib.Nifti1Image):
+            self.mask = mask
         else:
-            self.settings = settings
+            raise TypeError("The mask must be a filepath string or a Nifti1Image object.")
 
-        if isinstance(cv, int) or (cv is None):
-            self.cv = KFold(n_splits=cv)
-        else:
-            self.cv = cv
+        if scoring is None:
+            if is_classifier(estimator):
+                self.scorer = accuracy_score
+            elif is_regressor(estimator):
+                self.scorer = r2_score
+            if callable(scoring):
+                self.scorer = scoring
 
-        if n_jobs is None:
-            self.n_jobs = 1
-        else:
-            self.n_jobs = n_jobs
-
-        # Define a cache and result variable;
-        self._cache = []
-        self.precomp = []
-
-    def check_pipeline(self):
-
-        # Check if the transformer is present in the pipeline;
-        if not isinstance(self.estimator, Pipeline):
-            raise Exception(
-                ("The 'estimator' parameter must be a scikit-learn " +
-                 "pipeline containing, at least, an instance of " +
-                 "Displacement Invariant_Transformer() " +
-                 "and a scikit-learn estimator.")
-                )
-
-        pipeline_steps = self.estimator.steps
-        n_steps = len(self.estimator.steps)
-        check_transformer_presence = [
-            isinstance(pipeline_steps[i][1],
-                       DisplacementInvariantTransformer)
-            for i in range(n_steps)
-        ]
-
-        # Check whether there is only one instance of DIT() in the pipeline;
-        if sum(check_transformer_presence) > 1:
-            raise Exception(
-                ("Only one instance of Displacement_Invariant_Transformer " +
-                 "is allowed in a pipeline.")
+        if cv is None:
+            self.cv = KFold(
+                n_splits=5,
+                random_state=random_state,
+                shuffle=shuffle
             )
+        elif isinstance(cv, int):
+            self.cv = KFold(
+                n_splits=cv,
+                random_state=random_state,
+                shuffle=shuffle
+            )
+        elif hasattr(cv, 'split'):
+            self.cv = cv
+            self.cv.shuffle = shuffle
+            self.cv.random_state = random_state
+        else:
+            raise TypeError("The cv parameter must be an integer, a cross-validation instance or None.")
 
-        return check_transformer_presence
+        self.n_jobs = 1 if n_jobs is None else n_jobs
+        self.best_model_ = None
+        self.coordinates_ = []
 
-    def _precompute(self, X, y, p_grid, iteration=None, train_index=None):
+    def _compute_models(self, x, y, p_grid, iteration=None, train_index=None, test_index=None):
+        x_train, y_train = x[train_index], y[train_index]
+        x_test, y_test = x[test_index], y[test_index]
 
-        transformer_ID = self.estimator.steps[
-            self.check_transformer_presence is True][0]
-        X_train, y_train = X[train_index], y[train_index]
-
-        keys, values, params, hash_params = _get_search_params(
-            X_train,
-            y_train,
+        keys, values, params = _get_search_params(
             p_grid,
-            transformer_ID,
             iteration
         )
 
-        if hash_params not in self._cache:
-            # Add transformer settings to the current set of parameters,
-            # then precompute data;
-            self._cache.append(hash_params)
-            params = _update_parameters(params, self.settings)
-            coords = DisplacementInvariantTransformer(**params).precompute(
-                X_train,
-                y_train
-            )
-        else:
-            coords = np.nan
+        trf_params, model_params = _split_params(params)
 
-        return (keys, values, hash_params, coords)
+        transformer = DisplacementInvariantTransformer(**trf_params, mask=self.mask).fit(x_train, y_train)
+        x_trf = transformer.transform(x_train)
 
-    def fit(self, X, y, groups=None):
+        model = self.estimator(**model_params).fit(x_trf, y_train)
+        y_pred = model.predict(transformer.transform(x_test))
+        score = self.scorer(y_test, y_pred)
 
+        return keys, values, score, transformer.coords_
+
+    def _return_best_model(self):
+        best_index = np.argmax(self.coordinates_["score"])
+        keys = self.coordinates_["keys"][best_index]
+        values = self.coordinates_["values"][best_index]
+        params = dict(zip(keys, values))
+
+        trf_params, model_params = _split_params(params)
+
+        transformer = DisplacementInvariantTransformer(**trf_params, mask=self.mask)
+        model = self.estimator(**model_params)
+
+        pipeline = Pipeline([
+            ('trf', transformer),
+            ('model', model)
+        ])
+
+        return pipeline
+
+    def fit(self, x, y, groups=None):
         if not isinstance(y, np.ndarray):
             y = np.array(y)
 
-        # Check if transformer is present inside Pipeline;
-        self.check_transformer_presence = self.check_pipeline()
-        is_transformer_present = True in self.check_transformer_presence
-
-        if not is_transformer_present:
-            raise Exception(("An instance of " +
-                             "Displacement_Invariant_Transformer() " +
-                             "must be present in the pipeline"))
-
-        # n_iteration is equal to number of parameter combinations;
         n_iterations = len(list(itertools.product(*self.parameters.values())))
 
-        # Run precompute for every combination of parameters and cv-fold;
-        self.precomp.append(Parallel(n_jobs=self.n_jobs)(delayed(
-            self._precompute)(X, y, self.parameters, iteration, train_index)
-            for train_index, _ in self.cv.split(X, y, groups=groups)
+        results = (Parallel(n_jobs=self.n_jobs)(delayed(
+            self._compute_models)(x, y, self.parameters, iteration, train_index, test_index)
+            for train_index, test_index in self.cv.split(x, y, groups=groups)
             for iteration in np.arange(n_iterations)))
 
-        # Remove possible NA and return precomputed data as a numpy array;
-        self.precomp = pd.DataFrame.from_records(
-            self.precomp[0]).dropna().to_numpy()
+        records = [
+            {
+                'keys': result[0],
+                'values': result[1],
+                'score': result[2],
+                'coordinates': result[3]
+            }
+            for result in results
+        ]
 
-        if self.search is None:
-            return self.precomp
+        self.coordinates_ = pd.DataFrame.from_records(records)
+        self.best_model_ = self._return_best_model()
 
-        else:
-            # Use settings to set up the trasformer before gridsearch;
-            if len(self.settings) > 0:
-                for key, value in zip(
-                    self.settings.keys(),
-                    self.settings.values()
-                ):
-                    setattr(
-                        self.estimator.steps[
-                            self.check_transformer_presence is True][1],
-                        key,
-                        value
-                    )
-
-            # If the transformer is present,
-            # add precomputed data to its precomp attribute;
-            setattr(self.estimator.steps[
-                self.check_transformer_presence is True][1],
-                "precomp",
-                self.precomp
-                )
-
-            # Run GridSearch algorithm;
-            search = self.search(self.estimator,
-                                 self.parameters,
-                                 scoring=self.scoring,
-                                 cv=self.cv,
-                                 n_jobs=self.n_jobs).fit(X, y, groups=groups)
-
-            return search
+        return self
