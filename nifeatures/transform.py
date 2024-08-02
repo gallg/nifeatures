@@ -155,9 +155,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         # Check if the Transformer is fitted;
         check_is_fitted(self)
 
-        # if self.empty_map is None:
-        #     self.empty_map = np.zeros(self.mask.get_fdata().shape)
-
         # Initialize the output array;
         n_samples = x.shape[0]
         index_mask = np.flatnonzero(self.mask.get_fdata())
