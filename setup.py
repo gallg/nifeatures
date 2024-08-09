@@ -14,8 +14,8 @@ setup(
     long_description_content_type="text/markdown",
     long_description=LONG_DESCRIPTION,
     packages=find_packages(),
-    install_requires=["joblib==1.2.0", "nibabel==4.0.2", "nilearn==0.9.2", "numba==0.56.3", "numpy==1.23.4",
-                      "pandas==1.5.1", "scikit_learn==1.2.1", "scipy==1.11.2"],
+    install_requires=["joblib==1.4.2", "nibabel==5.2.1", "nilearn==0.10.4", "numpy==1.26.4",
+                      "pandas==2.2.2", "scikit_learn==1.5.1", "scipy==1.13.1"],
     keywords=['python', 'machine learning', 'neuroimaging', 'feature engineering'],
     classifiers=[]
 )
