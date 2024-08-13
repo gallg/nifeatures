@@ -29,7 +29,9 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
                 Path to Binary template mask.
                 If None, the MNI152 2mm template is used. Defaults to None.
             n_peaks (int, optional):
-                Number of signal peaks to find. Defaults to 100.
+                Maximum number of signal peaks to find.
+                The final number of peaks used to for data transformation 
+                depends on other hyperparameters. Defaults to 100.
             radius (int, optional):
                 Radius of the spheres generated around each peak.
                 Defaults to 4.
@@ -79,6 +81,9 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         self.random_state = random_state
         self.kwargs = kwargs
 
+        if min_distance < 0:
+            raise ValueError('min_distance cannot be negative')
+
         # variable init;
         self.empty_map = None
         self.group_map_ = None
@@ -103,40 +108,41 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         self.empty_map = np.zeros(self.mask.get_fdata().shape)
 
         # Initialize array to contain group-level statistics;
-        self.group_stats = np.zeros((x.shape[1], 2))
+        self.group_stats = np.zeros(x.shape[1])
 
         # Select only non-zero std voxels for correlation;
-        non_zero_mask = self.mask.get_fdata().flatten().astype(bool)
-        non_zero_features = np.array(range(x.shape[1]))[non_zero_mask]
-        non_zero_features = non_zero_features[
-            (np.std(x[:, non_zero_mask],
-                    axis=0) != 0)
-            ]
+        non_zero_features = np.where(self.mask.get_fdata().flatten())[0]
+        non_zero_features = non_zero_features[np.std(x[:, non_zero_features], axis=0) != 0]
 
         # Select correlation method and get group-level statistics;
         if self.method == 'R2':
 
-            for feature in non_zero_features:
-                self.group_stats[feature, 0] = calculate_r2(
-                    x[:, feature],
-                    y
-                    )
+            self.group_stats[non_zero_features] = np.apply_along_axis(
+                calculate_r2, 
+                0, 
+                x[:, non_zero_features], 
+                y
+            )
 
         elif isinstance(self.method, abc.Callable):
 
-            for feature in non_zero_features:
-                self.group_stats[feature, 0] = self.method(
-                    x[:, feature],
-                    y
-                    )
+            self.group_stats[non_zero_features] = np.apply_along_axis(
+                self.method, 
+                0, 
+                x[:, non_zero_features], 
+                y
+            )
 
-        # Reshape group-level statistical map and get local maxima;
-        stat_map = self.group_stats[:, 0].reshape(self.mask.get_fdata().shape)
+
+        # Reshape group-level statistical map and convert it as a nifti image;
+        stat_map = self.group_stats.reshape(self.mask.shape)
 
         self.group_map_ = nib.Nifti1Image(
             stat_map,
             affine=self.mask.affine
             )
+
+        # Find peaks in the statistical map;
         self.coords_ = find_peaks(self.group_map_,
                                   mask=self.mask,
                                   empty_map=self.empty_map,
@@ -157,9 +163,10 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
 
         # Initialize the output array;
         n_samples = x.shape[0]
-        index_mask = np.flatnonzero(self.mask.get_fdata())
         self.X_out_ = np.zeros((n_samples,))
-
+        
+        index_mask = np.flatnonzero(self.mask.get_fdata())
+        
         # Loop over each coordinate,
         # compute the corresponding sphere and aggregated values;
         for idx, coordinate in enumerate(self.coords_):
