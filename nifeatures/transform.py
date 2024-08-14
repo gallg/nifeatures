@@ -1,7 +1,7 @@
+from nifeatures.utils import calculate_r2, find_peaks, draw_sphere
 from sklearn.base import BaseEstimator, TransformerMixin
 from nilearn.datasets import load_mni152_brain_mask
 from sklearn.utils.validation import check_is_fitted
-from nifeatures.utils import create_roi, calculate_r2, find_peaks
 from collections import abc
 import nibabel as nib
 import numpy as np
@@ -13,7 +13,7 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, *, mask=None, n_peaks=100, radius=4, min_distance=2,
                  method='R2', probability=None, temperature=0.2, threshold=0,
                  tolerance=1e-4, aggregator_func=(np.max,), random_state=None,
-                 **kwargs):
+                 verbose=False, **kwargs):
 
         """ Transforms brain data to generate new, more important and
             concise features.
@@ -61,6 +61,9 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
             random_state (int, optional):
                 If probability is equal to 'softmax', set seed to make sphere
                 generation reproducible. Defaults to None.
+            verbose (bool, optional):
+                If True, print the number of peaks found in the data for the 
+                current set of hyperparameters. Defaults to False.
 
         Returns:
             X_out (numpy array): Array containing new features with shape:
@@ -79,15 +82,13 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         self.threshold = threshold
         self.tolerance = tolerance
         self.random_state = random_state
+        self.verbose = verbose
         self.kwargs = kwargs
 
-        if min_distance < 0:
-            raise ValueError('min_distance cannot be negative')
-
-        # variable init;
+        # Initialize storage variables;
+        self.X_out_ = None
         self.empty_map = None
         self.group_map_ = None
-        self.X_out_ = None
         self.coords_ = None
         self.group_stats = None
 
@@ -103,6 +104,9 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
             self.mask = load_mni152_brain_mask(resolution=2)
         elif isinstance(self.mask, nib.Nifti1Image):
             pass
+
+        if self.min_distance < 0:
+            raise ValueError('min_distance cannot be negative')
 
         # Initialize empty_map to avoid re-allocation;
         self.empty_map = np.zeros(self.mask.get_fdata().shape)
@@ -152,7 +156,8 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
                                   temperature=self.temperature,
                                   thr=self.threshold,
                                   tol=self.tolerance,
-                                  random_state=self.random_state
+                                  random_state=self.random_state,
+                                  verbose=self.verbose
                                   )
 
         return self
@@ -161,38 +166,47 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         # Check if the Transformer is fitted;
         check_is_fitted(self)
 
-        # Initialize the output array;
+        # reset variables;
         n_samples = x.shape[0]
-        self.X_out_ = np.zeros((n_samples,))
+        self.X_out_ = []
+        indices = []
         
-        index_mask = np.flatnonzero(self.mask.get_fdata())
-        
-        # Loop over each coordinate,
-        # compute the corresponding sphere and aggregated values;
-        for idx, coordinate in enumerate(self.coords_):
-            indices = create_roi(
-                self.empty_map,
-                self.mask.get_fdata(),
-                coordinate,
-                self.radius,
-                flatten=True
-            )
-            indices = [idx for idx in indices if idx in index_mask]
+        # Compute the corresponding sphere and aggregated values;
+        indices = [self.create_roi(coordinate)
+            for coordinate in self.coords_]
 
-            # Update temporary data;
-            temp = self.aggregator_func[0](x[:, indices], axis=1)
-            self.update_features(temp, n_samples, idx)
+        # transform and update data;
+        for idx, indices in enumerate(indices):
+            for func in self.aggregator_func:
+                temp = func(x[:, indices], axis=1)
+                self.update_features(temp)
+
+        # Make sure that final data is a numpy array;
+        self.X_out_ = np.array(self.X_out_).reshape(-1, n_samples).T
 
         return self.X_out_
 
-    def update_features(self, temp, n_samples, idx):
-        if len(temp.shape) > 1:
-            temp = temp.T if temp.shape[0] > 1 else temp.reshape(n_samples,)
+    def create_roi(self, coordinate):
+        sphere_mask = draw_sphere(
+            self.empty_map, 
+            self.mask.get_fdata(), 
+            coordinate,
+            self.radius
+        )
 
-        if idx == 0:
-            self.X_out_ = temp
+        # Remove voxels outside the mask;
+        index_mask = np.flatnonzero(self.mask.get_fdata())
+        indices = np.flatnonzero(sphere_mask)
+        indices = indices[np.isin(indices, index_mask)]
+
+        return indices
+
+    def update_features(self, temp):
+        if temp.shape[0] > 1:
+            for feature in range(temp.shape[0]):
+                self.X_out_.append(temp[feature])
         else:
-            self.X_out_ = np.column_stack((self.X_out_, temp))
-
+            self.X_out_.append(temp)
+        
     def fit_transform(self, x, y=None, **fit_params):
         return self.fit(x, y).transform(x)

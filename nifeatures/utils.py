@@ -64,16 +64,6 @@ def draw_sphere(empty_map, mask, coord, radius):
 
     return sphere
 
-def create_roi(empty_map, mask, coord, radius, flatten=False):
-    sphere_mask = draw_sphere(empty_map, mask, coord, radius)
-
-    if flatten is True:
-        indices = np.flatnonzero(sphere_mask)
-    else:
-        indices = np.nonzero(sphere_mask)
-
-    return indices
-
 
 def update_stats_map(stats, temperature, thr=0):
 
@@ -92,22 +82,30 @@ def update_stats_map(stats, temperature, thr=0):
     return stats
 
 
-def calculate_peaks(coords, n_peaks, min_distance):
+def calculate_peaks(coords, n_peaks, min_distance, verbose):
 
     # Keep coords that respect min_distance;  
     coords = filter_coords(coords, min_distance)
 
     # Make sure to keep only the best "n_peaks" coodinates;
-    if len(coords) < n_peaks:
+    if verbose and len(coords) < n_peaks:
         warn("Maximum number of eligible local maximas is lower then n_peaks. "
                     + "Using n_peaks == {}".format(coords.shape[0]))
 
     return coords
 
 
-def get_peak_probabilities(stats_map, empty_map, n_peaks,
-                           min_distance, temperature, thr,
-                           tol, random_state):
+def get_peak_probabilities(
+        stats_map, 
+        empty_map, 
+        n_peaks,
+        min_distance, 
+        temperature, 
+        thr,
+        tol, 
+        random_state, 
+        verbose
+    ):
 
     map_length = np.flatnonzero(stats_map).shape[0]
 
@@ -142,7 +140,7 @@ def get_peak_probabilities(stats_map, empty_map, n_peaks,
 
     # Get coordinates that respect min_distance;
     if min_distance > 0:
-        result = calculate_peaks(result, n_peaks, min_distance)
+        result = calculate_peaks(result, n_peaks, min_distance, verbose)
 
     return result
 
@@ -157,8 +155,9 @@ def find_peaks(
         temperature=0.1,
         thr=0,
         tol=1e-4,
-        random_state=None
-):
+        random_state=None,
+        verbose=False
+    ):
 
     coords = []
     stats_map = stats_map.get_fdata() * mask.get_fdata().astype(bool)
@@ -172,8 +171,9 @@ def find_peaks(
                                         temperature,
                                         thr=thr,
                                         tol=tol,
-                                        random_state=random_state
-                                        )
+                                        random_state=random_state,
+                                        verbose=verbose
+                                    )
 
     elif probability is None:
         peaks0 = np.array(
@@ -198,6 +198,6 @@ def find_peaks(
         coords = coords[values.argsort()[::-1]][:n_peaks, :]
         
         if min_distance > 0:
-            coords = calculate_peaks(coords, n_peaks, min_distance)
+            coords = calculate_peaks(coords, n_peaks, min_distance, verbose)
 
     return coords
