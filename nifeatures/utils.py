@@ -87,17 +87,16 @@ def calculate_peaks(coords, n_peaks, min_distance, verbose):
     # Keep coords that respect min_distance;  
     coords = filter_coords(coords, min_distance)
 
-    # Make sure to keep only the best "n_peaks" coodinates;
+    # Make sure to keep only the best "n_peaks" coordinates;
     if verbose and len(coords) < n_peaks:
-        warn("Maximum number of eligible local maximas is lower then n_peaks. "
+        warn("Maximum number of eligible local maxima is lower then n_peaks. "
                     + "Using n_peaks == {}".format(coords.shape[0]))
 
     return coords
 
 
 def get_peak_probabilities(
-        stats_map, 
-        empty_map, 
+        stats_map,
         n_peaks,
         min_distance, 
         temperature, 
@@ -148,7 +147,6 @@ def get_peak_probabilities(
 def find_peaks(
         stats_map,
         mask,
-        empty_map=None,
         n_peaks=100,
         min_distance=2,
         probability=None,
@@ -165,7 +163,6 @@ def find_peaks(
     # Use softmax to find random peaks in the data;
     if probability == 'softmax':
         coords = get_peak_probabilities(stats_map,
-                                        empty_map,
                                         n_peaks,
                                         min_distance,
                                         temperature,

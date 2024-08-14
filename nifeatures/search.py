@@ -45,10 +45,10 @@ class DisplacementInvariantTransformerCV:
         DisplacementInvariantTransformer.
 
         Unlike GridSearchCV, DisplacementInvariantTransformerCV does not need to take in
-        a scikit-learn pipelin that includes DisplacementInvariantTransformer. Instead, it
+        a scikit-learn pipeline that includes DisplacementInvariantTransformer. Instead, it
         takes in a scikit-learn estimator and a dictionary of hyperparameter ranges.
 
-        the parameter grid format follows scikit-learn's parameter grid format.
+        the parameter grid is a scikit-learn compatible dictionary of parameters.
 
         Args:
             estimator (callable): 
@@ -173,7 +173,6 @@ class DisplacementInvariantTransformerCV:
         model_params, 
         predict=False
     ):
-        y_pred = None
         score = None
 
         x_train, y_train = x[train_index], y[train_index]

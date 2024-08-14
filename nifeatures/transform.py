@@ -149,7 +149,6 @@ class DisplacementInvariantTransformer(BaseEstimator, TransformerMixin):
         # Find peaks in the statistical map;
         self.coords_ = find_peaks(self.group_map_,
                                   mask=self.mask,
-                                  empty_map=self.empty_map,
                                   n_peaks=self.n_peaks,
                                   min_distance=self.min_distance,
                                   probability=self.probability,
