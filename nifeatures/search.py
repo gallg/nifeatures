@@ -37,6 +37,7 @@ class DisplacementInvariantTransformerCV:
             scoring=None,
             cv=None,
             shuffle=False,
+            refit=True,
             random_state=None,
             n_jobs=None
     ):
@@ -44,10 +45,10 @@ class DisplacementInvariantTransformerCV:
         DisplacementInvariantTransformer.
 
         Unlike GridSearchCV, DisplacementInvariantTransformerCV does not need to take in
-        a scikit-learn pipelin that includes DisplacementInvariantTransformer. Instead, it
+        a scikit-learn pipeline that includes DisplacementInvariantTransformer. Instead, it
         takes in a scikit-learn estimator and a dictionary of hyperparameter ranges.
 
-        the parameter grid format follows scikit-learn's parameter grid format.
+        the parameter grid is a scikit-learn compatible dictionary of parameters.
 
         Args:
             estimator (callable): 
@@ -68,8 +69,10 @@ class DisplacementInvariantTransformerCV:
                 Determines the cross-validation splitting strategy. 
                 If None, use the default 5-fold cross-validation. Defaults to None.
             shuffle (bool, optional): 
-                Whether to shuffle the data before splitting into batches. 
+                If True, shuffle the data before splitting into batches. 
                 The samples within each split will not be shuffled. Defaults to False.
+            refit (bool, optional): 
+                If True, returns a fitted version of pipeline as best_model_. Defaults to True.
             random_state (int, RandomState instance, optional): 
                 When shuffle is True, random_state determines randomization of each fold. 
                 Defaults to None.
@@ -84,12 +87,13 @@ class DisplacementInvariantTransformerCV:
             best_model_ (scikit-learn Pipeline): 
                 A pipeline that includes the best model found using 
                 DisplacementInvariantTransformer and the specified estimator.
-                Note that this model is not retrained on the training data.
+                If refit is set to False, the best_model_ is not fitted.
         """
 
         self.estimator = estimator
         self.parameters = p_grid
         self.scorer = scoring
+        self.refit = refit
 
         if mask is None:
             self.mask = mask
@@ -131,10 +135,15 @@ class DisplacementInvariantTransformerCV:
         self.best_model_ = None
         self.coordinates_ = []
 
-    def _compute_models(self, x, y, p_grid, iteration=None, train_index=None, test_index=None):
-        x_train, y_train = x[train_index], y[train_index]
-        x_test, y_test = x[test_index], y[test_index]
-
+    def _compute_models(
+        self, 
+        x, 
+        y, 
+        p_grid, 
+        iteration=None, 
+        train_index=None, 
+        test_index=None
+    ):
         keys, values, params = _get_search_params(
             p_grid,
             iteration
@@ -142,16 +151,46 @@ class DisplacementInvariantTransformerCV:
 
         trf_params, model_params = _split_params(params)
 
+        transformer, model, score = self._fit_model(
+            x, 
+            y, 
+            train_index,
+            test_index,
+            trf_params, 
+            model_params, 
+            predict=True
+        )
+
+        return keys, values, score, transformer.coords_, (train_index, test_index)
+
+    def _fit_model(
+        self, 
+        x, 
+        y, 
+        train_index,
+        test_index,
+        trf_params, 
+        model_params, 
+        predict=False
+    ):
+        score = None
+
+        x_train, y_train = x[train_index], y[train_index]
+        x_test, y_test = x[test_index], y[test_index]
+
         transformer = DisplacementInvariantTransformer(**trf_params, mask=self.mask).fit(x_train, y_train)
         x_trf = transformer.transform(x_train)
-
+        
         model = self.estimator(**model_params).fit(x_trf, y_train)
-        y_pred = model.predict(transformer.transform(x_test))
-        score = self.scorer(y_test, y_pred)
 
-        return keys, values, score, transformer.coords_
+        if predict:
+            y_pred = model.predict(transformer.transform(x_test))
+            score = self.scorer(y_test, y_pred)
+        
+        return transformer, model, score
 
-    def _return_best_model(self):
+    
+    def _return_best_model(self, x, y):
         best_index = np.argmax(self.coordinates_["score"])
         keys = self.coordinates_["keys"][best_index]
         values = self.coordinates_["values"][best_index]
@@ -159,8 +198,22 @@ class DisplacementInvariantTransformerCV:
 
         trf_params, model_params = _split_params(params)
 
-        transformer = DisplacementInvariantTransformer(**trf_params, mask=self.mask)
-        model = self.estimator(**model_params)
+        if self.refit:
+            train_index = self.coordinates_["indices"][best_index][0]
+            test_index = self.coordinates_["indices"][best_index][1]
+            
+            transformer, model, score = self._fit_model(
+                x, 
+                y, 
+                train_index,
+                test_index,
+                trf_params, 
+                model_params, 
+                predict=False
+            )
+        else:
+            transformer = DisplacementInvariantTransformer(**trf_params, mask=self.mask)
+            model = self.estimator(**model_params)
 
         pipeline = Pipeline([
             ('trf', transformer),
@@ -185,12 +238,13 @@ class DisplacementInvariantTransformerCV:
                 'keys': result[0],
                 'values': result[1],
                 'score': result[2],
-                'coordinates': result[3]
+                'coordinates': result[3],
+                'indices': result[4]
             }
             for result in results
         ]
 
         self.coordinates_ = pd.DataFrame.from_records(records)
-        self.best_model_ = self._return_best_model()
+        self.best_model_ = self._return_best_model(x, y)
 
         return self

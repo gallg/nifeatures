@@ -1,1 +1,5 @@
 .idea/
+data_in/PainGen
+notebooks/PainGen.ipynb
+nifeatures/__pycache__/
+
